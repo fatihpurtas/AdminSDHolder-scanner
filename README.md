@@ -12,7 +12,7 @@ Even if a user has been removed from these groups, the `adminCount=1` flag often
 - Exports the remaining accounts that require review into a **CSV file**.
 ------------------------------ 
 ## How It Works
-1. Uses `DirectorySearcher` to find users with `adminCount=1`.
+1. Uses `DirectorySearcher` with **paging enabled** (1000 objects per page) to find all users with `adminCount=1`, even in large domains.
 2. Collects user properties:
    - **Name**
    - **SamAccountName**
@@ -21,18 +21,21 @@ Even if a user has been removed from these groups, the `adminCount=1` flag often
    - **Group Memberships**
    - **UserAccountControl**
 3. Analyzes group memberships to determine privilege status:
-   - **True**: Confirmed member of high-privilege groups (Domain Admins, Enterprise Admins, Schema Admins)
+   - **True**: Confirmed member of a high-privilege group (see list below)
    - **False**: Has group memberships but none are high-privilege groups
    - **No Group Membership**: No direct group memberships found (requires manual review for nested privileges)
 4. Evaluates `userAccountControl` to exclude disabled users.
-5. Excludes system accounts (`krbtgt`, `Administrator`, computer objects). because these are default or service accounts that do not represent real user accounts requiring security review.
+5. Excludes system accounts (`krbtgt`, `Administrator`, computer objects), because these are default or service accounts that do not represent real user accounts requiring security review.
 6. Exports filtered users into a **CSV** file.
 ------------------------------ 
 ## High Privilege Detection Logic
-The script analyzes group memberships using pattern matching against known high-privilege groups:
-- **Domain Admins**
-- **Enterprise Admins**
-- **Schema Admins**
+The script extracts the `CN` from each `memberOf` distinguished name and compares it (exact, case-insensitive) against the following known high-privilege / operator groups:
+- **Domain Admins**, **Enterprise Admins**, **Schema Admins**
+- **Administrators**
+- **Account Operators**, **Backup Operators**, **Server Operators**, **Print Operators**
+- **Key Admins**, **Enterprise Key Admins**
+
+Exact CN matching avoids the false positives that substring matching can produce (e.g. a custom group whose name merely contains "Admins").
 
 **Important Limitations:**
 - Only detects **direct group memberships** (not nested group relationships).
@@ -77,20 +80,37 @@ Example: `adminsdholder_users_fatih_local.csv`
 ## USAGE
 Run the script in PowerShell:
 ```powershell
-.\AdminSDHolderAnalysis.ps1
+.\AdminSDHolder.ps1
 ```
+
+Optional parameters:
+```powershell
+# Query a specific domain controller and choose the output path
+.\AdminSDHolder.ps1 -Server dc01.example.com -OutputPath C:\Audit\adminsd.csv
+
+# Scope the search to a specific OU
+.\AdminSDHolder.ps1 -SearchBase "OU=IT,DC=example,DC=com"
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `-Server` | Domain controller to query directly (`dc01.example.com` or `:636`). Defaults to the current domain. |
+| `-SearchBase` | Distinguished name to scope the search. Defaults to the domain's default naming context. |
+| `-OutputPath` | CSV output path. Defaults to `.\adminsdholder_users_<domain>.csv`. |
 
 If PowerShell execution policies prevent the script from running, you can bypass them temporarily:
 ```powershell
-powershell -ExecutionPolicy Bypass -File "C:\Bla\Bla\AdminSDHolder.ps1"
+powershell -ExecutionPolicy Bypass -File "C:\Path\To\AdminSDHolder.ps1"
 ```
 
 ## Example Output
 ```plaintext
 === ADMINSDHOLDER USER ANALYSIS ===
-Total users found: 15
-Users requiring review: 3
-CSV file saved with Unicode encoding: adminsdholder_users_example_com.csv
+Total accounts with adminCount=1: 15
+Accounts requiring review:        3
+  - Confirmed high privilege:     1
+  - No group membership (nested?): 1
+CSV file saved (Unicode): .\adminsdholder_users_example_com.csv
 ```
 
 ## Requirements & Notes
@@ -116,9 +136,9 @@ Attackers who compromise a lower-privileged account may:
 This creates a **stealthy persistence mechanism** for attackers inside AD environments.
 
 ### Analysis Results Interpretation
-- **True**: Immediate security concern – user has confirmed high privileges.
-- **False**: Lower priority – user has groups but no high privileges detected.
-- **No Group Membership**: **High priority for manual review** – user may have:
+- **True**: Immediate security concern: user has confirmed high privileges.
+- **False**: Lower priority: user has groups but no high privileges detected.
+- **No Group Membership**: **High priority for manual review**: user may have:
   - Nested group privileges not detected by the script
   - Historical privileges that need cleanup
   - Special permissions or primary group settings
@@ -130,9 +150,9 @@ This creates a **stealthy persistence mechanism** for attackers inside AD enviro
 - Method 1: Using PowerShell (requires AD module)
   - Set-ADUser -Identity "username" -Clear adminCount
 - Method 2: Using ADSI Edit
-  - Open ADSI Edit → Connect to Default naming context
+  - Open ADSI Edit and connect to the Default naming context
   - Navigate to the user object
-  - Right-click → Properties → Find "adminCount" attribute
+  - Right-click, choose Properties, and find the "adminCount" attribute
   - Delete the adminCount attribute or set it to 0
 - **Manually investigate** users with "No Group Membership" status for nested privileges.
 - **Restrict membership** of protected groups to the bare minimum required.
